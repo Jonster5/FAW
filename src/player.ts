@@ -1,5 +1,5 @@
 import { Component, ECS, With } from 'raxis';
-import { Canvas, Inputs, Transform } from 'raxis-plugins';
+import { Canvas, Inputs, Sprite, Transform } from 'raxis-plugins';
 import { Vec2 } from 'raxis/math';
 import { Planet } from './planet';
 
@@ -8,69 +8,91 @@ export class Player extends Component {}
 export class SelectionMarker extends Component {}
 export class Selected extends Component {}
 
-export class HoverEvent extends Component {
-  constructor(public type: 'enter' | 'exit', public eid: number) {
-    super();
-  }
+export class SelectionEvent extends Component {
+	constructor(public type: 'select' | 'deselect', public eid?: number) {
+		super();
+	}
 }
 
-function checkHovering(ecs: ECS) {
-  const { pointer } = ecs.getResource(Inputs);
-  const [canvas, ct] = ecs.query([Canvas, Transform]).single();
+function checkSelecting(ecs: ECS) {
+	const { pointer } = ecs.getResource(Inputs);
+	const [canvas, ct] = ecs.query([Canvas, Transform]).single();
 
-  const box = canvas.element.getBoundingClientRect();
-  const elementSize = new Vec2(box.right - box.left, box.bottom - box.top);
-  const offset = new Vec2(box.left, box.top);
+	const box = canvas.element.getBoundingClientRect();
+	const elementSize = new Vec2(box.right - box.left, box.bottom - box.top);
+	const offset = new Vec2(box.left, box.top);
 
-  if (
-    pointer.pos.x < box.left ||
-    pointer.pos.y < box.top ||
-    pointer.pos.x > box.right ||
-    pointer.pos.y > box.bottom
-  ) {
-    return;
-  }
+	if (
+		!pointer.leftIsDown ||
+		pointer.pos.x < box.left ||
+		pointer.pos.y < box.top ||
+		pointer.pos.x > box.right ||
+		pointer.pos.y > box.bottom
+	) {
+		return;
+	}
 
-  // const scale = window.devicePixelRatio * canvas.zoom;
+	const pos = pointer.pos
+		.clone()
+		.sub(offset)
+		.sub(elementSize.div(2))
+		.mul(new Vec2(2, -2))
+		// .setMag(canvas.size.mag())
+		.sub(ct.pos);
 
-  const pos = pointer.pos
-    .clone()
-    .sub(offset)
-    .sub(elementSize.div(2))
-    .mul(new Vec2(2, -2))
-    // .setMag(canvas.size.mag())
-    .sub(ct.pos);
+	const planetQuery = ecs.query([Transform], With(Planet));
 
-  const planets = ecs.query([Transform], With(Planet)).results();
+	let allOutside = true;
 
-  planets.forEach(([t], i) => {
-    if (
-      !pos
-        .clone()
-        .sub(t.pos)
-        .toArray()
-        .every((n) => n > 0) ||
-      !t.size
-        .clone()
-        .sub(pos.clone().sub(t.pos))
-        .toArray()
-        .every((n) => n > 0)
-    )
-      return;
+	planetQuery.results().forEach(([t], i) => {
+		if (pos.distanceToSq(t.pos) > 25 ** 2) return;
 
-    const entity = ecs.entity(
-      ecs.query([Transform], With(Planet)).entities()[i]
-    );
+		allOutside = false;
 
-    ecs.getEventWriter(HoverEvent).send(new HoverEvent('enter', entity.id()));
-  });
+		const eid = planetQuery.entities()[i];
+
+		ecs.getEventWriter(SelectionEvent).send(
+			new SelectionEvent('select', eid)
+		);
+	});
+
+	if (allOutside)
+		ecs.getEventWriter(SelectionEvent).send(new SelectionEvent('deselect'));
 }
 
-function selectPlanet(ecs: ECS) {}
+function selectPlanet(ecs: ECS) {
+	const selected = ecs.getEventReader(SelectionEvent);
+	if (selected.empty()) return;
+
+	selected.get().forEach(({ type, eid }) => {
+		ecs.query([], With(Selected))
+			.entities()
+			.map((e) => ecs.entity(e))
+			.forEach((e) => {
+				e.children(With(SelectionMarker)).forEach((c) =>
+					ecs.destroy(c)
+				);
+
+				e.delete(Selected);
+			});
+
+		if (type === 'select') {
+			const s = ecs.entity(eid!);
+
+			s.insert(new Selected());
+			s.addChild(
+				ecs.spawn(
+					new SelectionMarker(),
+					new Transform(new Vec2(75, 75)),
+					new Sprite('ellipse', '', true, undefined, 1, 'lime', 3)
+				)
+			);
+		}
+	});
+}
 
 export function PlayerPlugin(ecs: ECS) {
-  ecs
-    .addComponentTypes(Player, Selected, SelectionMarker)
-    .addEventTypes(HoverEvent)
-    .addMainSystems(selectPlanet, checkHovering);
+	ecs.addComponentTypes(Player, Selected, SelectionMarker)
+		.addEventTypes(SelectionEvent)
+		.addMainSystems(selectPlanet, checkSelecting);
 }
